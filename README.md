@@ -30,7 +30,7 @@ It uses only the camera's standard USB webcam (UVC) controls. No DJI software, n
 ## Build and install
 
 ```bash
-git clone <this repo>
+git clone https://github.com/travisoberlander/pocket3bar.git
 cd pocket3bar
 ./scripts/make-signing-identity.sh   # optional, once: keeps the camera permission across rebuilds
 ./build.sh --install                 # builds and copies Pocket3Bar.app to ~/Applications
