@@ -1,0 +1,399 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Pocket 3 Control</title>
+<style>
+  :root {
+    --bg: #f4f4f2; --panel: #ffffff; --ink: #1c1c1a; --muted: #6b6b66; --line: #e2e1dc;
+    --accent: #2f6fde; --accent-ink: #fff; --ok: #1f8a4c; --warn: #b4572b; --pad: #efeeea;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --bg: #141413; --panel: #1e1e1c; --ink: #ecebe6; --muted: #9a9993; --line: #2e2e2b;
+      --accent: #5b8ff0; --accent-ink: #0d0d0c; --ok: #4cc07d; --warn: #e08a5c; --pad: #272725;
+    }
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--ink);
+         font: 14px/1.4 -apple-system, BlinkMacSystemFont, "SF Pro Text", system-ui, sans-serif; }
+  main { max-width: 980px; margin: 0 auto; padding: 20px 16px 40px; display: grid; gap: 16px;
+         grid-template-columns: 1fr 320px; }
+  @media (max-width: 820px) { main { grid-template-columns: 1fr; } }
+  header { grid-column: 1 / -1; display: flex; align-items: center; justify-content: space-between; }
+  h1 { font-size: 18px; margin: 0; font-weight: 600; }
+  .status { display: flex; gap: 8px; align-items: center; color: var(--muted); font-size: 13px; }
+  .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--warn); }
+  .dot.on { background: var(--ok); }
+  .card { background: var(--panel); border: 1px solid var(--line); border-radius: 12px; padding: 16px; }
+  .card h2 { font-size: 12px; text-transform: uppercase; letter-spacing: .06em; color: var(--muted);
+             margin: 0 0 12px; font-weight: 600; }
+  .preview { aspect-ratio: 16/9; background: #000; border-radius: 8px; overflow: hidden; position: relative;
+             display: grid; place-items: center; }
+  .preview video { width: 100%; height: 100%; object-fit: contain; }
+  .preview button { position: absolute; }
+  .readout { display: grid; grid-template-columns: repeat(4, 1fr); gap: 8px; margin-top: 12px; }
+  .readout div { background: var(--pad); border-radius: 8px; padding: 8px 10px; }
+  .readout b { display: block; font-size: 18px; font-variant-numeric: tabular-nums; font-weight: 600; }
+  .readout span { font-size: 11px; color: var(--muted); text-transform: uppercase; letter-spacing: .05em; }
+  .side { display: grid; gap: 16px; align-content: start; }
+  .dpad { display: grid; grid-template-columns: repeat(3, 64px); grid-template-rows: repeat(3, 64px);
+          gap: 6px; justify-content: center; }
+  button { font: inherit; color: var(--ink); background: var(--pad); border: 1px solid var(--line);
+           border-radius: 10px; cursor: pointer; padding: 8px 12px; user-select: none; -webkit-user-select: none; }
+  button:hover { border-color: var(--muted); }
+  button:active, button.pressed { background: var(--accent); color: var(--accent-ink); border-color: var(--accent); }
+  .dpad button { font-size: 20px; padding: 0; }
+  .dpad .mid { font-size: 11px; }
+  .row { display: flex; gap: 8px; flex-wrap: wrap; }
+  .row button { flex: 1; }
+  .hold-on { background: var(--accent); color: var(--accent-ink); border-color: var(--accent); }
+  label.slider { display: grid; grid-template-columns: 48px 1fr 48px; gap: 10px; align-items: center; margin: 6px 0; }
+  label.slider span:last-child { text-align: right; font-variant-numeric: tabular-nums; }
+  input[type=range] { width: 100%; accent-color: var(--accent); }
+  .presets { display: grid; grid-template-columns: repeat(4, 1fr); gap: 6px; }
+  .presets button { padding: 10px 0; }
+  .presets button.empty { color: var(--muted); }
+  .hint { color: var(--muted); font-size: 12px; margin: 10px 0 0; }
+  kbd { font: 11px ui-monospace, monospace; background: var(--pad); border: 1px solid var(--line);
+        border-radius: 4px; padding: 1px 4px; }
+  .preview canvas { position: absolute; inset: 0; width: 100%; height: 100%; pointer-events: none; }
+  .track-btn { width: 100%; padding: 12px; font-weight: 600; }
+  .track-btn.on { background: var(--ok); color: #fff; border-color: var(--ok); }
+  .track-btn.paused { background: var(--pad); border-color: var(--warn); color: var(--warn); }
+  .track-status { font-size: 13px; color: var(--muted); margin: 8px 0 0; min-height: 18px; }
+  .card.warn { border-color: var(--warn); }
+  .card.warn h2 { color: var(--warn); }
+  .card.warn p { margin: 0 0 8px; font-size: 13px; }
+  button:disabled { opacity: .4; cursor: not-allowed; }
+  /* scale: 0..40 degrees; near-the-end zone starts at 24 */
+  .err { color: var(--warn); font-size: 13px; min-height: 18px; }
+</style>
+</head>
+<body>
+<main>
+  <header>
+    <h1>Pocket 3 Control</h1>
+    <div class="status"><span class="dot" id="dot"></span><span id="conn">Connecting…</span></div>
+  </header>
+
+  <section class="card">
+    <div class="preview" id="preview">
+      <video id="video" autoplay muted playsinline hidden></video>
+      <canvas id="overlay"></canvas>
+      <button id="startPreview">Show camera preview</button>
+    </div>
+    <div class="readout">
+      <div><span>Pan</span><b id="rPan">–</b></div>
+      <div><span>Tilt</span><b id="rTilt">–</b></div>
+      <div><span>Zoom</span><b id="rZoom">–</b></div>
+      <div><span>Roll</span><b id="rRoll">–</b></div>
+    </div>
+    <p class="err" id="err"></p>
+  </section>
+
+  <div class="side">
+    <section class="card">
+      <h2>Face tracking</h2>
+      <button id="trackBtn" class="track-btn" title="T">Tracking off</button>
+      <p class="track-status" id="trackStatus">Turn off ActiveTrack on the camera first, so the two don't fight.</p>
+      <label class="slider"><span>Pace</span><input type="range" id="pace" min="1" max="5" value="3"><span id="paceV">3</span></label>
+      <p class="hint">Moving the camera yourself (d-pad, keys, presets, Level, Hold) pauses tracking. Press <kbd>T</kbd> or click to resume.</p>
+    </section>
+
+    <section class="card">
+      <h2>Gimbal</h2>
+      <div class="dpad">
+        <span></span><button data-n="0,1" title="Tilt up (↑)">▲</button><span></span>
+        <button data-n="-1,0" title="Pan left (←)">◀</button>
+        <button class="mid" id="level" title="Level tilt (L)">LEVEL</button>
+        <button data-n="1,0" title="Pan right (→)">▶</button>
+        <span></span><button data-n="0,-1" title="Tilt down (↓)">▼</button><span></span>
+      </div>
+      <div class="row" style="margin-top:12px">
+        <button id="holdBtn" title="Space">Released</button>
+      </div>
+      <label class="slider"><span>Speed</span><input type="range" id="speed" min="1" max="10" value="3"><span id="speedV">3°</span></label>
+      <p class="hint">While <b>Holding</b>, the camera stays where you point it. <b>Release</b> hands framing back to the camera's follow / tracking.</p>
+      <p class="hint">Front / selfie is switched on the camera itself. Moves stay on that side. Keep the camera body fairly upright: if it leans far forward, a move can flip selfie to front.</p>
+    </section>
+
+    <section class="card">
+      <h2>Lens</h2>
+      <label class="slider"><span>Zoom</span><input type="range" id="zoom" min="1" max="4" step="0.1" value="1"><span id="zoomV">1.0×</span></label>
+      <label class="slider"><span>Roll</span><input type="range" id="roll" min="-30" max="30" step="1" value="0"><span id="rollV">0°</span></label>
+      <div class="row"><button id="zoomReset">1×</button><button id="rollReset">Roll 0°</button></div>
+    </section>
+
+    <section class="card">
+      <h2>Presets</h2>
+      <div class="presets" id="presets"></div>
+      <p class="hint">Click to recall · <kbd>⇧</kbd>+click or <kbd>⇧</kbd>+<kbd>1</kbd>–<kbd>4</kbd> to save current shot.</p>
+    </section>
+
+    <p class="hint">Keys: <kbd>←↑↓→</kbd> move · <kbd>+</kbd>/<kbd>−</kbd> zoom · <kbd>L</kbd> level · <kbd>Space</kbd> hold/release · <kbd>1</kbd>–<kbd>4</kbd> presets · <kbd>T</kbd> tracking</p>
+  </div>
+</main>
+
+<script>
+const $ = (id) => document.getElementById(id);
+let S = null, dragging = null;
+
+async function api(path, body) {
+  try {
+    const r = await fetch(path, body ? { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) } : {});
+    const j = await r.json();
+    if (!r.ok) throw new Error(j.error || r.statusText);
+    render(j); $("err").textContent = "";
+    return j;
+  } catch (e) {
+    $("dot").classList.remove("on"); $("conn").textContent = "Not connected";
+    $("err").textContent = "Camera: " + e.message + " (is it plugged in as a webcam?)";
+  }
+}
+
+function render(s) {
+  S = s;
+  $("dot").classList.add("on"); $("conn").textContent = "Webcam mode · USB";
+  $("rPan").textContent = s.pan.toFixed(0) + "°";
+  $("rTilt").textContent = s.tilt.toFixed(0) + "°";
+  $("rZoom").textContent = s.zoom.toFixed(1) + "×";
+  $("rRoll").textContent = s.roll + "°";
+  if (dragging !== "zoom") { $("zoom").value = s.zoom; $("zoomV").textContent = s.zoom.toFixed(1) + "×"; }
+  if (dragging !== "roll") { $("roll").value = s.roll; $("rollV").textContent = s.roll + "°"; }
+  $("zoom").min = s.ranges.zoom[0]; $("zoom").max = s.ranges.zoom[1];
+  $("roll").min = s.ranges.roll[0]; $("roll").max = s.ranges.roll[1];
+  $("conn").textContent = "Webcam mode · USB · " + (s.facing === "selfie" ? "selfie" : "front-facing");
+  const hb = $("holdBtn");
+  hb.textContent = s.hold ? "Holding · click to release" : "Released · camera follows";
+  hb.classList.toggle("hold-on", s.hold);
+  const p = $("presets"); p.innerHTML = "";
+  for (let i = 1; i <= 4; i++) {
+    const b = document.createElement("button"), has = s.presets[i];
+    b.textContent = has ? i : i + " ·"; b.className = has ? "" : "empty";
+    b.title = has ? `Pan ${has.pan.toFixed(0)}°, tilt ${has.tilt.toFixed(0)}°, ${has.zoom}×` : "Empty: shift+click to save";
+    b.onclick = (e) => preset(i, e.shiftKey);
+    p.appendChild(b);
+  }
+}
+
+function preset(i, save) {
+  if (save) api("/api/preset/save", { slot: i });
+  else if (S && S.presets[i]) { pauseTracking(); api("/api/preset/recall", { slot: i }); }
+}
+
+// press-and-hold movement
+let moveTimer = null;
+function startMove(dx, dy, el) {
+  stopMove();
+  pauseTracking();
+  el && el.classList.add("pressed");
+  const step = () => { const sp = +$("speed").value; api("/api/nudge", { pan: dx * sp, tilt: dy * sp }); };
+  step(); moveTimer = setInterval(step, 150);
+}
+function stopMove() {
+  clearInterval(moveTimer); moveTimer = null;
+  document.querySelectorAll(".pressed").forEach((b) => b.classList.remove("pressed"));
+}
+document.querySelectorAll("[data-n]").forEach((b) => {
+  const [dx, dy] = b.dataset.n.split(",").map(Number);
+  b.addEventListener("pointerdown", (e) => { e.preventDefault(); startMove(dx, dy, b); });
+  ["pointerup", "pointerleave", "pointercancel"].forEach((ev) => b.addEventListener(ev, stopMove));
+});
+$("level").onclick = () => { pauseTracking(); api("/api/level", {}); };
+$("holdBtn").onclick = () => {
+  if (!S) return;
+  if (S.hold) { setTracking("off"); api("/api/release", {}); }
+  else { pauseTracking(); api("/api/goto", { pan: S.pan, tilt: S.tilt }); }
+};
+$("speed").oninput = (e) => ($("speedV").textContent = e.target.value + "°");
+
+for (const k of ["zoom", "roll"]) {
+  const el = $(k);
+  el.addEventListener("pointerdown", () => (dragging = k));
+  el.addEventListener("pointerup", () => (dragging = null));
+  el.addEventListener("input", () => {
+    $(k + "V").textContent = k === "zoom" ? (+el.value).toFixed(1) + "×" : el.value + "°";
+    api("/api/" + k, { [k]: +el.value });
+  });
+}
+$("zoomReset").onclick = () => api("/api/zoom", { zoom: 1 });
+$("rollReset").onclick = () => api("/api/roll", { roll: 0 });
+
+const KEYS = { ArrowLeft: [-1, 0], ArrowRight: [1, 0], ArrowUp: [0, 1], ArrowDown: [0, -1] };
+const held = new Set();
+document.addEventListener("keydown", (e) => {
+  if (e.target.tagName === "INPUT" && e.target.type !== "range") return;
+  if (KEYS[e.key]) { e.preventDefault(); if (!held.has(e.key)) { held.add(e.key); startMove(...KEYS[e.key]); } return; }
+  if (e.repeat) return;
+  if (e.key === "+" || e.key === "=") api("/api/zoom", { zoom: S.zoom + 0.2 });
+  else if (e.key === "-" || e.key === "_") api("/api/zoom", { zoom: S.zoom - 0.2 });
+  else if (e.key === "l" || e.key === "L") api("/api/level", {});
+  else if (e.key === "t" || e.key === "T") $("trackBtn").click();
+  else if (e.key === " ") { e.preventDefault(); $("holdBtn").click(); }
+  else if (/^Digit[1-4]$/.test(e.code)) preset(+e.code.slice(5), e.shiftKey);
+});
+document.addEventListener("keyup", (e) => { if (KEYS[e.key]) { held.delete(e.key); if (!held.size) stopMove(); } });
+
+// optional live preview of the Pocket 3 feed
+async function startPreview() {
+  if ($("video").srcObject) return true;
+  try {
+    await navigator.mediaDevices.getUserMedia({ video: true });
+    const devs = await navigator.mediaDevices.enumerateDevices();
+    const osmo = devs.find((d) => d.kind === "videoinput" && /osmo|pocket|dji/i.test(d.label));
+    if (!osmo) throw new Error("Pocket 3 not listed as a camera");
+    const stream = await navigator.mediaDevices.getUserMedia({
+      video: { deviceId: { exact: osmo.deviceId }, width: { ideal: 1280 }, height: { ideal: 720 } } });
+    $("video").srcObject = stream; $("video").hidden = false; $("startPreview").hidden = true;
+    await new Promise((r) => ($("video").readyState >= 2 ? r() : ($("video").onloadeddata = r)));
+    return true;
+  } catch (e) { $("err").textContent = "Preview: " + e.message; return false; }
+}
+$("startPreview").onclick = startPreview;
+
+// ---- Face tracking (runs here in the page; steers the gimbal through /api/track)
+const MP = "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14";
+const MODEL = "https://storage.googleapis.com/mediapipe-models/face_detector/blaze_face_short_range/float16/1/blaze_face_short_range.tflite";
+const HFOV = 95, VFOV = 53;          // degrees at 1x (16:9), measured by pocket-viewer
+const AIM_Y = 0.42;                  // keep eyes a little above centre
+let panSign = 1, pending = null, badPan = 0;   // panSign flips if the picture turns out mirrored
+let detector = null, trackMode = "off", face = null, lastSeen = 0, lastStep = 0, stepBusy = false;
+let movingX = false, movingY = false;          // deadzone hysteresis state
+
+async function loadDetector() {
+  if (detector) return detector;
+  $("trackStatus").textContent = "Loading face detector…";
+  const { FaceDetector, FilesetResolver } = await import(MP + "/vision_bundle.mjs");
+  const files = await FilesetResolver.forVisionTasks(MP + "/wasm");
+  const opts = (delegate) => ({ baseOptions: { modelAssetPath: MODEL, delegate },
+                                runningMode: "VIDEO", minDetectionConfidence: 0.5 });
+  try { detector = await FaceDetector.createFromOptions(files, opts("GPU")); }
+  catch { detector = await FaceDetector.createFromOptions(files, opts("CPU")); }
+  return detector;
+}
+
+function setTracking(mode, note) {
+  trackMode = mode;
+  const b = $("trackBtn");
+  b.classList.toggle("on", mode === "on");
+  b.classList.toggle("paused", mode === "paused");
+  b.textContent = { off: "Tracking off", on: "Tracking on", paused: "Tracking paused · resume" }[mode];
+  $("trackStatus").textContent = note ?? (mode === "paused" ? "Paused because you moved the camera." :
+                                          mode === "off" ? "" : "Looking for a face…");
+  if (mode !== "on") glideStop();
+  if (mode === "off") { face = null; drawOverlay(); }
+}
+function pauseTracking() { if (trackMode === "on") setTracking("paused"); }
+
+$("trackBtn").onclick = async () => {
+  if (trackMode === "on") return setTracking("off");
+  if (!(await startPreview())) return;
+  try { await loadDetector(); }
+  catch (e) { return setTracking("off", "Could not load the face detector (needs internet once): " + e.message); }
+  setTracking("on");
+  if (!looping) { looping = true; requestAnimationFrame(trackFrame); }
+};
+$("pace").oninput = (e) => ($("paceV").textContent = e.target.value);
+
+// Pick the face nearest the one we were following, else the biggest.
+function pickFace(dets, w, h) {
+  const faces = dets.map((d) => ({ x: d.boundingBox.originX / w, y: d.boundingBox.originY / h,
+                                   w: d.boundingBox.width / w, h: d.boundingBox.height / h }));
+  if (!faces.length) return null;
+  if (face && performance.now() - lastSeen < 1500) {
+    const c = (f) => [f.x + f.w / 2, f.y + f.h / 2], [px, py] = c(face);
+    return faces.reduce((a, b) => { const [ax, ay] = c(a), [bx, by] = c(b);
+      return Math.hypot(ax - px, ay - py) <= Math.hypot(bx - px, by - py) ? a : b; });
+  }
+  return faces.reduce((a, b) => (a.w * a.h >= b.w * b.h ? a : b));
+}
+
+let looping = false;
+function trackFrame() {
+  if (trackMode === "off") { looping = false; return; }
+  const v = $("video"), now = performance.now();
+  if (v.readyState >= 2 && v.videoWidth) {
+    const res = detector.detectForVideo(v, now);
+    const f = pickFace(res.detections, v.videoWidth, v.videoHeight);
+    if (f) {
+      // smooth the box so detector jitter doesn't reach the gimbal
+      const a = 0.35;
+      face = face ? { x: face.x + (f.x - face.x) * a, y: face.y + (f.y - face.y) * a,
+                      w: face.w + (f.w - face.w) * a, h: face.h + (f.h - face.h) * a } : f;
+      lastSeen = now;
+    } else if (now - lastSeen > 800) face = null;
+    drawOverlay();
+    if (trackMode === "on") {
+      $("trackStatus").textContent = face ? "Following your face." :
+        "No face in view. Holding position.";
+      if (face) { checkDirection(now); step(now); } else glideStop();
+    }
+  }
+  requestAnimationFrame(trackFrame);
+}
+
+// Glide: send a pan/tilt speed proportional to how far the face is off-centre.
+// The server eases between speeds and moves the gimbal in small steps ~25x/s, so
+// the camera drifts smoothly toward the face and slows as it gets close.
+// A start/stop deadzone (hysteresis) keeps it from hunting around the centre.
+function step(now) {
+  if (stepBusy || now - lastStep < 100) return;
+  const pace = +$("pace").value;
+  const zoom = (S && S.zoom) || 1;
+  const ex = face.x + face.w / 2 - 0.5, ey = face.y + face.h / 2 - AIM_Y;
+  const START = 0.07, STOP = 0.025;
+  movingX = Math.abs(ex) > (movingX ? STOP : START);
+  movingY = Math.abs(ey) > (movingY ? STOP : START * 1.3);
+  const gain = 0.5 + pace * 0.3;               // 1/s: pace 1 → 0.8, 3 → 1.4, 5 → 2.0
+  const vmax = 6 + pace * 6;                   // deg/s cap
+  const lim = (x) => Math.max(-vmax, Math.min(vmax, x));
+  const vpan = movingX ? panSign * lim(ex * (HFOV / zoom) * gain) : 0;
+  const vtilt = movingY ? lim(-ey * (VFOV / zoom) * gain) : 0;
+  if (!vpan && !vtilt && !glideActive) return;
+  glideActive = !!(vpan || vtilt);
+  lastStep = now; stepBusy = true;
+  if (vpan && !pending) pending = { ex, t: now };
+  fetch("/api/glide", { method: "POST", headers: { "Content-Type": "application/json" },
+                        body: JSON.stringify({ pan: vpan, tilt: vtilt }) })
+    .catch(() => {}).finally(() => (stepBusy = false));
+}
+let glideActive = false;
+function glideStop() {
+  if (!glideActive) return;
+  glideActive = false; movingX = movingY = false;
+  fetch("/api/glide", { method: "POST", headers: { "Content-Type": "application/json" },
+                        body: JSON.stringify({ pan: 0, tilt: 0 }) }).catch(() => {});
+}
+
+// If panning keeps pushing the face further off-centre, the image is mirrored
+// (e.g. a mirrored selfie view): flip the pan direction.
+function checkDirection(now) {
+  if (!pending || now - pending.t < 600) return;
+  const ex = face.x + face.w / 2 - 0.5;
+  if (Math.abs(pending.ex) > 0.1 && Math.sign(ex) === Math.sign(pending.ex) &&
+      Math.abs(ex) > Math.abs(pending.ex) + 0.03) badPan++;
+  else badPan = 0;
+  pending = null;
+  if (badPan >= 4) { panSign = -panSign; badPan = 0; }
+}
+
+function drawOverlay() {
+  const c = $("overlay"), v = $("video"), r = c.getBoundingClientRect();
+  c.width = r.width * devicePixelRatio; c.height = r.height * devicePixelRatio;
+  const g = c.getContext("2d"); g.clearRect(0, 0, c.width, c.height);
+  if (!face || !v.videoWidth) return;
+  // match object-fit: contain letterboxing
+  const s = Math.min(c.width / v.videoWidth, c.height / v.videoHeight);
+  const dw = v.videoWidth * s, dh = v.videoHeight * s, ox = (c.width - dw) / 2, oy = (c.height - dh) / 2;
+  g.lineWidth = 2 * devicePixelRatio;
+  g.strokeStyle = trackMode === "on" ? "#4cc07d" : "#e0a35c";
+  g.strokeRect(ox + face.x * dw, oy + face.y * dh, face.w * dw, face.h * dh);
+}
+
+api("/api/state");
+setInterval(() => { if (!moveTimer && !dragging) api("/api/state"); }, 700);
+</script>
+</body>
+</html>
