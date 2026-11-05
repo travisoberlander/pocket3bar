@@ -6,7 +6,7 @@ It uses only the camera's standard USB webcam (UVC) controls. No DJI software, n
 
 > Not affiliated with or endorsed by DJI. Built by vibe coding with Claude, and tested on one Pocket 3 and one Mac. Treat it as a hobby project.
 
-<!-- TODO: add a screenshot of the menu and a short demo clip -->
+<p align="center"><img src="docs/images/menu.png" width="392" alt="The Pocket3Bar menu: live preview, face tracking, gimbal d-pad with Hold, zoom and roll sliders, and presets"></p>
 
 ## Features
 
