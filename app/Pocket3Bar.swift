@@ -276,7 +276,9 @@ final class Tracker: NSObject, AVCaptureVideoDataOutputSampleBufferDelegate {
         return l
     }()
     private let queue = DispatchQueue(label: "pocket3.tracker")
-    private var configured = false
+    private var input: AVCaptureDeviceInput?
+    private var outputAdded = false
+    private var lastReattach = 0.0
     private var frames = 0, startedAt = 0.0
     var wantPreview = false, wantTracking = false
     var onProblem: ((String?) -> Void)?    // nil = video is flowing
@@ -298,12 +300,18 @@ final class Tracker: NSObject, AVCaptureVideoDataOutputSampleBufferDelegate {
     private var panSign = 1.0, badPan = 0
     private var pending: (ex: Double, t: Double)?
 
+    override init() {
+        super.init()
+        observeDevices()
+    }
+
     /// Start the camera (if not already running) for preview and/or tracking.
-    func start(_ done: @escaping (String?) -> Void) {
+    /// `reattach` rebuilds the camera input even if one is attached (used after a stall or wake).
+    func start(reattach: Bool = false, _ done: @escaping (String?) -> Void) {
         AVCaptureDevice.requestAccess(for: .video) { ok in
             guard ok else { return done("Camera access is off for Pocket3Bar. Turn it on in System Settings › Privacy & Security › Camera.") }
             self.queue.async {
-                if !self.configured, let err = self.configure() { return done(err) }
+                if let err = self.ensureInput(force: reattach) { return done(err) }
                 if !self.session.isRunning {
                     self.frames = 0
                     self.startedAt = CACurrentMediaTime()
@@ -319,9 +327,56 @@ final class Tracker: NSObject, AVCaptureVideoDataOutputSampleBufferDelegate {
     private func checkFlowing() {
         guard session.isRunning else { return }
         debugLog("frames after 3s: \(frames)")
-        if frames == 0 {
-            onProblem?("No video from the Pocket 3 yet. Unplug it and plug it back in, or quit other apps using it.")
-            queue.asyncAfter(deadline: .now() + 3) { self.checkFlowing() }
+        guard frames == 0 else { return }
+        // Running but silent usually means the input points at a camera that went away
+        // (powered off, or asleep with the Mac): rebuild it, at most every 10 s.
+        let now = CACurrentMediaTime()
+        if now - lastReattach > 10 {
+            lastReattach = now
+            debugLog("no frames; re-attaching the camera")
+            session.stopRunning()
+            start(reattach: true) { [weak self] err in if let err { self?.onProblem?(err) } }
+            return
+        }
+        onProblem?("No video from the Pocket 3 yet. Is it on, and in webcam mode?")
+        queue.asyncAfter(deadline: .now() + 3) { self.checkFlowing() }
+    }
+
+    /// Restart the camera if the preview or tracking still wants it.
+    private func restartIfWanted(reattach: Bool, why: String) {
+        guard wantPreview || wantTracking else { return }
+        debugLog("restarting camera: \(why)")
+        start(reattach: reattach) { [weak self] err in self?.onProblem?(err) }
+    }
+
+    private func observeDevices() {
+        let nc = NotificationCenter.default
+        nc.addObserver(forName: AVCaptureDevice.wasDisconnectedNotification, object: nil, queue: nil) { [weak self] n in
+            guard let self, let dev = n.object as? AVCaptureDevice else { return }
+            self.queue.async {
+                guard dev.uniqueID == self.input?.device.uniqueID else { return }
+                debugLog("camera disconnected: \(dev.localizedName)")
+                if self.session.isRunning { self.session.stopRunning() }
+                self.detachInput()
+                self.glideStop(); self.face = nil; self.eyes = nil
+                self.onProblem?("The Pocket 3 disconnected. It will reconnect when it comes back.")
+            }
+        }
+        nc.addObserver(forName: AVCaptureDevice.wasConnectedNotification, object: nil, queue: nil) { [weak self] n in
+            guard let self, let dev = n.object as? AVCaptureDevice,
+                  dev.localizedName.range(of: "osmo|pocket|dji", options: [.regularExpression, .caseInsensitive]) != nil else { return }
+            debugLog("camera connected: \(dev.localizedName)")
+            // give the camera a moment to finish coming up before opening it
+            self.queue.asyncAfter(deadline: .now() + 1.5) { self.restartIfWanted(reattach: true, why: "camera connected") }
+        }
+        NSWorkspace.shared.notificationCenter.addObserver(forName: NSWorkspace.didWakeNotification, object: nil, queue: nil) { [weak self] _ in
+            debugLog("Mac woke from sleep")
+            self?.queue.asyncAfter(deadline: .now() + 3) { self?.restartIfWanted(reattach: true, why: "wake") }
+        }
+        nc.addObserver(forName: AVCaptureSession.runtimeErrorNotification, object: session, queue: nil) { [weak self] n in
+            let e = (n.userInfo?[AVCaptureSessionErrorKey] as? NSError)?.localizedDescription ?? "unknown"
+            debugLog("runtime error: \(e)")
+            self?.onProblem?("Camera error: " + e)
         }
     }
 
@@ -341,28 +396,44 @@ final class Tracker: NSObject, AVCaptureVideoDataOutputSampleBufferDelegate {
             .first { $0.localizedName.range(of: "osmo|pocket|dji", options: [.regularExpression, .caseInsensitive]) != nil }
     }
 
-    private func configure() -> String? {
-        guard let dev = Tracker.findPocket3() else { return "Pocket 3 isn't connected as a webcam." }
-        debugLog("device: \(dev.localizedName) format: \(dev.activeFormat.formatDescription)")
+    /// Make sure the session's input is the Pocket 3 that's connected right now. When the
+    /// camera powers off or the Mac sleeps, macOS can hand back a new device object, and an
+    /// input built on the old one runs without ever delivering frames. Runs on `queue`.
+    private func ensureInput(force: Bool) -> String? {
+        guard let dev = Tracker.findPocket3() else {
+            detachInput()
+            return "Pocket 3 isn't connected as a webcam."
+        }
+        if !force, let i = input, i.device.uniqueID == dev.uniqueID, i.device.isConnected,
+           session.inputs.contains(i) { return nil }
+        debugLog("attaching \(dev.localizedName) format: \(dev.activeFormat.formatDescription)")
+        if session.isRunning { session.stopRunning() }
         session.beginConfiguration()
+        session.inputs.forEach { session.removeInput($0) }
+        input = nil
         // Use the camera's own current format (forcing a preset it doesn't offer
         // can leave the session running with no frames).
-        guard let input = try? AVCaptureDeviceInput(device: dev), session.canAddInput(input) else {
+        guard let newInput = try? AVCaptureDeviceInput(device: dev), session.canAddInput(newInput) else {
             session.commitConfiguration(); return "Couldn't open the Pocket 3 camera."
         }
-        session.addInput(input)
-        let out = AVCaptureVideoDataOutput()
-        out.alwaysDiscardsLateVideoFrames = true
-        out.setSampleBufferDelegate(self, queue: queue)
-        if session.canAddOutput(out) { session.addOutput(out) }
-        session.commitConfiguration()
-        NotificationCenter.default.addObserver(forName: AVCaptureSession.runtimeErrorNotification, object: session, queue: nil) { [weak self] n in
-            let e = (n.userInfo?[AVCaptureSessionErrorKey] as? NSError)?.localizedDescription ?? "unknown"
-            debugLog("runtime error: \(e)")
-            self?.onProblem?("Camera error: " + e)
+        session.addInput(newInput)
+        input = newInput
+        if !outputAdded {
+            let out = AVCaptureVideoDataOutput()
+            out.alwaysDiscardsLateVideoFrames = true
+            out.setSampleBufferDelegate(self, queue: queue)
+            if session.canAddOutput(out) { session.addOutput(out); outputAdded = true }
         }
-        configured = true
+        session.commitConfiguration()
         return nil
+    }
+
+    private func detachInput() {
+        guard !session.inputs.isEmpty else { input = nil; return }
+        session.beginConfiguration()
+        session.inputs.forEach { session.removeInput($0) }
+        session.commitConfiguration()
+        input = nil
     }
 
     func captureOutput(_ output: AVCaptureOutput, didOutput sb: CMSampleBuffer, from conn: AVCaptureConnection) {
